@@ -30,8 +30,8 @@ SERVICE_NAME="ssh-telegram-alert"
 SERVICE_PATH="/etc/systemd/system/$SERVICE_NAME.service"
 CONFIG_PATH="/etc/ssh-telegram-alert.conf"
 
-# Переменные для порта
-ALT_PORT="8022"  # Порт по умолчанию
+# Переменные для портов
+ALT_PORTS=""  # Список портов по умолчанию (пусто - не мониторим)
 
 # Проверка наличия установки
 check_existing_installation() {
@@ -133,7 +133,7 @@ check_dependencies() {
         pip3 install requests
     fi
     
-    # Проверяем tcpdump для мониторинга порта
+    # Проверяем tcpdump для мониторинга портов
     if ! command -v tcpdump &> /dev/null; then
         print_info "Установка tcpdump..."
         apt-get update
@@ -141,7 +141,7 @@ check_dependencies() {
         if [ $? -eq 0 ]; then
             print_success "tcpdump установлен"
         else
-            print_error "Не удалось установить tcpdump. Мониторинг порта $ALT_PORT будет недоступен"
+            print_error "Не удалось установить tcpdump. Мониторинг альтернативных портов будет недоступен"
         fi
     fi
     
@@ -153,26 +153,114 @@ check_dependencies() {
     print_success "Все зависимости проверены"
 }
 
-# Настройка альтернативного порта
-configure_alt_port() {
+# Функция валидации порта
+validate_port() {
+    local port=$1
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Функция валидации диапазона портов
+validate_port_range() {
+    local range=$1
+    if [[ "$range" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        local start=${BASH_REMATCH[1]}
+        local end=${BASH_REMATCH[2]}
+        if validate_port "$start" && validate_port "$end" && [ "$start" -lt "$end" ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Функция парсинга строки с портами
+parse_ports() {
+    local input=$1
+    local ports=()
+    
+    # Разделяем по запятой
+    IFS=',' read -ra items <<< "$input"
+    
+    for item in "${items[@]}"; do
+        # Убираем пробелы
+        item=$(echo "$item" | xargs)
+        
+        if [[ -z "$item" ]]; then
+            continue
+        fi
+        
+        # Проверяем, является ли элемент диапазоном
+        if [[ "$item" == *-* ]]; then
+            if validate_port_range "$item"; then
+                local start=${item%-*}
+                local end=${item#*-}
+                for ((p=start; p<=end; p++)); do
+                    ports+=("$p")
+                done
+            else
+                return 1
+            fi
+        else
+            if validate_port "$item"; then
+                ports+=("$item")
+            else
+                return 1
+            fi
+        fi
+    done
+    
+    # Убираем дубликаты и сортируем
+    if [ ${#ports[@]} -gt 0 ]; then
+        ports=($(printf "%s\n" "${ports[@]}" | sort -nu))
+        ALT_PORTS=$(printf "%s," "${ports[@]}")
+        ALT_PORTS=${ALT_PORTS%,}
+    else
+        ALT_PORTS=""
+    fi
+    
+    return 0
+}
+
+# Настройка альтернативных портов
+configure_alt_ports() {
     echo ""
-    print_info "=== НАСТРОЙКА АЛЬТЕРНАТИВНОГО ПОРТА ==="
+    print_info "=== НАСТРОЙКА АЛЬТЕРНАТИВНЫХ ПОРТОВ ==="
     echo ""
-    print_info "Будет отслеживаться порт: $ALT_PORT (по умолчанию)"
+    
+    if [ -z "$ALT_PORTS" ]; then
+        print_info "По умолчанию альтернативные порты не отслеживаются"
+    else
+        print_info "Текущие отслеживаемые порты: $ALT_PORTS"
+    fi
+    
+    echo ""
+    echo "Введите порты для мониторинга (через запятую, можно диапазоны)"
+    echo "Например: 8022,8080,2222 или 8022,8080-8090"
+    echo "Оставьте пустым, чтобы не мониторить альтернативные порты"
+    echo ""
     
     while true; do
-        echo ""
-        read -p "Изменить порт мониторинга? Введите номер порта или нажмите Enter для подтверждения [$ALT_PORT]: " input_port
+        read -p "Порты: " input_ports
         
-        if [ -z "$input_port" ]; then
-            print_info "Оставлен порт по умолчанию: $ALT_PORT"
+        if [ -z "$input_ports" ]; then
+            ALT_PORTS=""
+            print_info "Мониторинг альтернативных портов отключен"
             break
-        elif [[ "$input_port" =~ ^[0-9]+$ ]] && [ "$input_port" -ge 1 ] && [ "$input_port" -le 65535 ]; then
-            ALT_PORT="$input_port"
-            print_success "Установлен порт: $ALT_PORT"
-            break
+        fi
+        
+        if parse_ports "$input_ports"; then
+            if [ -n "$ALT_PORTS" ]; then
+                print_success "Установлены порты для мониторинга: $ALT_PORTS"
+                break
+            else
+                print_error "Не указано ни одного корректного порта"
+            fi
         else
-            print_error "Введите корректный номер порта (1-65535)"
+            print_error "Некорректный формат портов. Используйте числа от 1 до 65535, разделенные запятыми"
+            echo "Примеры: 8022,8080,2222 или 8022,8080-8090"
         fi
     done
 }
@@ -243,7 +331,7 @@ get_telegram_data() {
     local old_chat_id=""
     local old_antispam=""
     local old_timeout=""
-    local old_port=""
+    local old_ports=""
     
     if [ -f "$CONFIG_PATH" ]; then
         source "$CONFIG_PATH" 2>/dev/null
@@ -251,25 +339,25 @@ get_telegram_data() {
         old_chat_id="$TELEGRAM_CHAT_ID"
         old_antispam="$ANTISPAM_ENABLED"
         old_timeout="$ANTISPAM_TIMEOUT"
-        old_port="$ALT_PORT"
-    elif [ -f "$SCRIPT_PATH" ]; then
-        old_token=$(grep -oP 'TELEGRAM_BOT_TOKEN = "\K[^"]+' "$SCRIPT_PATH" 2>/dev/null)
-        old_chat_id=$(grep -oP 'TELEGRAM_CHAT_ID = "\K[^"]+' "$SCRIPT_PATH" 2>/dev/null)
-        old_port=$(grep -oP 'ALT_PORT = "\K[^"]+' "$SCRIPT_PATH" 2>/dev/null || echo "8022")
+        old_ports="$ALT_PORTS"
     fi
     
-    # Настройка альтернативного порта
-    if [ -n "$old_port" ]; then
-        echo "Текущий альтернативный порт: $old_port"
-        read -p "Изменить порт? (y/n): " change_port
-        if [[ "$change_port" =~ ^[Yy]$ ]]; then
-            configure_alt_port
+    # Настройка альтернативных портов
+    if [ -n "$old_ports" ]; then
+        echo "Текущие отслеживаемые порты: $old_ports"
+        read -p "Изменить список портов? (y/n): " change_ports
+        if [[ "$change_ports" =~ ^[Yy]$ ]]; then
+            configure_alt_ports
         else
-            ALT_PORT="$old_port"
-            print_info "Оставлен порт: $ALT_PORT"
+            ALT_PORTS="$old_ports"
+            if [ -n "$ALT_PORTS" ]; then
+                print_info "Оставлены порты: $ALT_PORTS"
+            else
+                print_info "Мониторинг альтернативных портов отключен"
+            fi
         fi
     else
-        configure_alt_port
+        configure_alt_ports
     fi
     
     echo ""
@@ -362,8 +450,8 @@ create_config_file() {
 TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
 
-# Настройки альтернативного порта
-ALT_PORT="$ALT_PORT"
+# Настройки альтернативных портов (через запятую)
+ALT_PORTS="$ALT_PORTS"
 
 # Настройки антиспама
 ANTISPAM_ENABLED=$ANTISPAM_ENABLED
@@ -421,8 +509,12 @@ TELEGRAM_BOT_TOKEN = config.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = config.get('TELEGRAM_CHAT_ID', '')
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-# ==== Настройки альтернативного порта ====
-ALT_PORT = config.get('ALT_PORT', '8022')
+# ==== Настройки альтернативных портов ====
+ALT_PORTS_STR = config.get('ALT_PORTS', '')
+if ALT_PORTS_STR:
+    ALT_PORTS = [p.strip() for p in ALT_PORTS_STR.split(',') if p.strip()]
+else:
+    ALT_PORTS = []
 
 # ==== Настройки антиспама ====
 ANTISPAM_ENABLED = config.get('ANTISPAM_ENABLED', 'true').lower() == 'true'
@@ -567,7 +659,7 @@ def format_failed(client_ip, port, username="неизвестно", method="не
     geo_text = format_ip_geo_info(geo_info)
     
     if is_alternative:
-        username = f"попытка подключения к порту {ALT_PORT}"
+        username = f"попытка подключения к порту {port}"
         method = "TCP-соединение"
     
     return f"""#SSH_Атака ❌
@@ -678,13 +770,14 @@ def monitor_sshd():
                     send_telegram_message(message)
                     print(f"❌ Атака: {username}@{ip_match.group(1)} (метод: {method})")
 
-# ==== Мониторинг TCP-пакетов на альтернативном порту ====
-def monitor_tcpdump():
+# ==== Мониторинг TCP-пакетов на альтернативных портах ====
+def monitor_port_tcpdump(port):
+    """Мониторит указанный порт на предмет входящих соединений"""
     # Проверяем наличие tcpdump
     try:
         subprocess.run(["which", "tcpdump"], check=True, capture_output=True)
     except subprocess.CalledProcessError:
-        print("❌ tcpdump не установлен. Мониторинг порта отключен")
+        print(f"❌ tcpdump не установлен. Мониторинг порта {port} отключен")
         return
     
     # Словарь для отслеживания времени последнего SYN с IP
@@ -692,13 +785,15 @@ def monitor_tcpdump():
     last_syn_time = {}
     SYN_TIMEOUT = 3  # секунд - если пауза больше, считаем новой атакой
     
-    cmd = ["tcpdump", "-ni", "any", "port", ALT_PORT, "-l"]
+    cmd = ["tcpdump", "-ni", "any", "port", str(port), "-l"]
     
     try:
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
     except Exception as e:
-        print(f"❌ Ошибка запуска tcpdump: {e}")
+        print(f"❌ Ошибка запуска tcpdump для порта {port}: {e}")
         return
+    
+    print(f"📡 Мониторинг порта {port} запущен")
     
     for line in process.stdout:
         line = line.strip()
@@ -734,13 +829,30 @@ def monitor_tcpdump():
                 
                 # Отправляем уведомление если нужно
                 if should_notify and can_send_for_ip(client_ip):
-                    print(f"⚠️ Атака на порт {ALT_PORT} с {client_ip}:{client_port}")
+                    print(f"⚠️ Атака на порт {port} с {client_ip}:{client_port}")
                     message = format_failed(client_ip, 
-                                           client_port,
-                                           f"атака на порт {ALT_PORT}",
+                                           str(port),
+                                           f"атака на порт {port}",
                                            "TCP-сканирование",
                                            True)
                     send_telegram_message(message)
+
+def monitor_alternative_ports():
+    """Запускает мониторинг для всех альтернативных портов"""
+    if not ALT_PORTS:
+        print("📡 Мониторинг альтернативных портов отключен")
+        return
+    
+    threads = []
+    for port in ALT_PORTS:
+        thread = threading.Thread(target=monitor_port_tcpdump, args=(port,))
+        thread.daemon = True
+        thread.start()
+        threads.append(thread)
+    
+    # Ожидаем завершения всех потоков (никогда не произойдет)
+    for thread in threads:
+        thread.join()
 
 # ==== Главная функция ====
 def main():
@@ -753,16 +865,21 @@ def main():
     print(f"IP: {SERVER_IP}")
     print(f"FQDN: {SERVER_FQDN}")
     print(f"Telegram Chat ID: {TELEGRAM_CHAT_ID}")
-    print(f"Альтернативный порт: {ALT_PORT}")
+    if ALT_PORTS:
+        print(f"Альтернативные порты: {', '.join(ALT_PORTS)}")
+    else:
+        print("Альтернативные порты: не отслеживаются")
     print(f"Антиспам: {antispam_status}")
     print("=" * 60)
     
     # Отправляем приветственное сообщение
+    ports_info = f"🔌 Альт. порты: {', '.join(ALT_PORTS)}" if ALT_PORTS else "🔌 Альт. порты: не отслеживаются"
+    
     welcome_message = f"""#SSH_Мониторинг 🚀
 🖥️ Сервер: {SERVER_HOSTNAME}
 🌐 Сервер IP: {SERVER_IP}
 📌 FQDN: {SERVER_FQDN}
-🔌 Альт. порт: {ALT_PORT}
+{ports_info}
 🛡️ Антиспам: {antispam_status}
 
 Мониторинг SSH подключений запущен
@@ -773,15 +890,18 @@ def main():
     
     send_telegram_message(welcome_message)
     
-    # Запускаем два потока
+    # Запускаем потоки
     t1 = threading.Thread(target=monitor_sshd)
-    t2 = threading.Thread(target=monitor_tcpdump)
+    t2 = threading.Thread(target=monitor_alternative_ports)
     t1.daemon = True
     t2.daemon = True
     t1.start()
     t2.start()
     
-    print(f"\n📡 Мониторинг SSH и порта {ALT_PORT}... (нажмите Ctrl+C для остановки)\n")
+    if ALT_PORTS:
+        print(f"\n📡 Мониторинг SSH и портов {', '.join(ALT_PORTS)}... (нажмите Ctrl+C для остановки)\n")
+    else:
+        print(f"\n📡 Мониторинг SSH (альтернативные порты отключены)... (нажмите Ctrl+C для остановки)\n")
     
     try:
         t1.join()
@@ -916,7 +1036,11 @@ show_instructions() {
     echo ""
     echo "🔌 Отслеживаемые порты:"
     echo "  ├─ Стандартный SSH: 22"
-    echo "  └─ Альтернативный: ${GREEN}$ALT_PORT${NC}"
+    if [ -n "$ALT_PORTS" ]; then
+        echo "  └─ Альтернативные: ${GREEN}$ALT_PORTS${NC}"
+    else
+        echo "  └─ Альтернативные: ${YELLOW}не отслеживаются${NC}"
+    fi
     echo ""
     
     if [ "$ANTISPAM_ENABLED" = "true" ]; then
@@ -939,6 +1063,13 @@ send_test_message() {
         ANTISPAM_TEXT="ОТКЛЮЧЕН"
     fi
     
+    # Формируем информацию о портах
+    if [ -n "$ALT_PORTS" ]; then
+        PORTS_TEXT="$ALT_PORTS"
+    else
+        PORTS_TEXT="не отслеживаются"
+    fi
+    
     # Создаем временный скрипт для отправки теста
     TEMP_TEST="/tmp/ssh_alert_test.py"
     
@@ -950,7 +1081,7 @@ import socket
 
 TELEGRAM_BOT_TOKEN = "$TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID = "$TELEGRAM_CHAT_ID"
-ALT_PORT = "$ALT_PORT"
+ALT_PORTS = "$ALT_PORTS"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
 # Информация о сервере
@@ -973,6 +1104,7 @@ except:
         server_ip = "Не удалось определить"
 
 antispam_status = "$ANTISPAM_TEXT"
+ports_text = "$PORTS_TEXT"
 
 now = datetime.datetime.now()
 current_date = now.strftime('%Y-%m-%d')
@@ -982,12 +1114,12 @@ test_message = f"""#SSH_Тест ✅
 🖥️ Сервер: {hostname}
 🌐 Сервер IP: {server_ip}
 📌 FQDN: {fqdn}
-🔌 Альт. порт: {ALT_PORT}
+🔌 Альт. порты: {ports_text}
 🛡️ Антиспам: {antispam_status}
 
 Тестовое сообщение
 Установка завершена успешно
-⚙️ Версия: 2.0 (с геолокацией)
+⚙️ Версия: 2.0 (с геолокацией, множественные порты)
 
 📅 Дата: {current_date}
 🕒 Время: {current_time}"""
@@ -1004,7 +1136,7 @@ try:
     print("✅ Тестовое сообщение отправлено успешно!")
     print(f"📊 Сервер: {hostname} ({fqdn}) - {server_ip}")
     print(f"📨 Chat ID: {TELEGRAM_CHAT_ID}")
-    print(f"🔌 Альт. порт: {ALT_PORT}")
+    print(f"🔌 Альт. порты: {ports_text}")
     print(f"🛡️ Антиспам: {antispam_status}")
 except Exception as e:
     print(f"❌ Ошибка отправки тестового сообщения: {e}")
@@ -1017,7 +1149,7 @@ EOF
 # Основная функция
 main() {
     echo ""
-    print_info "=== УСТАНОВЩИК SSH TELEGRAM ALERT v2.0 (с геолокацией) ==="
+    print_info "=== УСТАНОВЩИК SSH TELEGRAM ALERT v2.0 (с геолокацией, множественные порты) ==="
     echo ""
     
     # Проверка прав
@@ -1069,7 +1201,7 @@ main() {
     # Проверка зависимостей
     check_dependencies
     
-    # Получение данных (включая настройки порта и антиспама)
+    # Получение данных (включая настройки портов и антиспама)
     get_telegram_data
     
     # Создание конфигурационного файла
@@ -1102,7 +1234,12 @@ main() {
     
     echo ""
     print_success "Установка завершена!"
-    print_info "Сервис '$SERVICE_NAME' будет отслеживать все SSH подключения и порт $ALT_PORT"
+    
+    if [ -n "$ALT_PORTS" ]; then
+        print_info "Сервис '$SERVICE_NAME' будет отслеживать все SSH подключения и порты: $ALT_PORTS"
+    else
+        print_info "Сервис '$SERVICE_NAME' будет отслеживать только стандартный SSH порт 22"
+    fi
     echo ""
 }
 
