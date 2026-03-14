@@ -320,6 +320,67 @@ configure_antispam() {
     done
 }
 
+# Настройка типов уведомлений
+configure_notification_types() {
+    echo ""
+    print_info "=== НАСТРОЙКА ТИПОВ УВЕДОМЛЕНИЙ ==="
+    echo ""
+    
+    # Настройка уведомлений об успешных подключениях
+    while true; do
+        echo ""
+        echo "Уведомлять об успешных SSH подключениях?"
+        echo "  ${GREEN}1${NC}) Да, уведомлять (рекомендуется)"
+        echo "  ${RED}2${NC}) Нет, не уведомлять"
+        echo ""
+        read -p "Ваш выбор (1-2): " success_choice
+        
+        case $success_choice in
+            1)
+                NOTIFY_SUCCESS="true"
+                print_success "Уведомления об успешных подключениях ВКЛЮЧЕНЫ"
+                break
+                ;;
+            2)
+                NOTIFY_SUCCESS="false"
+                print_warning "Уведомления об успешных подключениях ОТКЛЮЧЕНЫ"
+                break
+                ;;
+            *)
+                print_error "Неверный выбор. Выберите 1 или 2"
+                ;;
+        esac
+    done
+    
+    echo ""
+    
+    # Настройка уведомлений о неудачных попытках
+    while true; do
+        echo ""
+        echo "Уведомлять о неудачных попытках подключения?"
+        echo "  ${GREEN}1${NC}) Да, уведомлять (рекомендуется)"
+        echo "  ${RED}2${NC}) Нет, не уведомлять"
+        echo ""
+        read -p "Ваш выбор (1-2): " failed_choice
+        
+        case $failed_choice in
+            1)
+                NOTIFY_FAILED="true"
+                print_success "Уведомления о неудачных попытках ВКЛЮЧЕНЫ"
+                break
+                ;;
+            2)
+                NOTIFY_FAILED="false"
+                print_warning "Уведомления о неудачных попытках ОТКЛЮЧЕНЫ"
+                break
+                ;;
+            *)
+                print_error "Неверный выбор. Выберите 1 или 2"
+                ;;
+        esac
+    done
+}
+
 # Запрос данных у пользователя
 get_telegram_data() {
     echo ""
@@ -329,17 +390,23 @@ get_telegram_data() {
     # Пытаемся прочитать существующие настройки
     local old_token=""
     local old_chat_id=""
+    local old_username=""
     local old_antispam=""
     local old_timeout=""
     local old_ports=""
+    local old_notify_success=""
+    local old_notify_failed=""
     
     if [ -f "$CONFIG_PATH" ]; then
         source "$CONFIG_PATH" 2>/dev/null
         old_token="$TELEGRAM_BOT_TOKEN"
         old_chat_id="$TELEGRAM_CHAT_ID"
+        old_username="$TELEGRAM_USERNAME"
         old_antispam="$ANTISPAM_ENABLED"
         old_timeout="$ANTISPAM_TIMEOUT"
         old_ports="$ALT_PORTS"
+        old_notify_success="$NOTIFY_SUCCESS"
+        old_notify_failed="$NOTIFY_FAILED"
     fi
     
     # Настройка альтернативных портов
@@ -359,6 +426,35 @@ get_telegram_data() {
     else
         configure_alt_ports
     fi
+    
+    echo ""
+    
+    # Запрашиваем Telegram username для упоминания
+    while true; do
+        if [ -n "$old_username" ]; then
+            read -p "Введите Telegram username для упоминания (с @ или без) [текущий: $old_username]: " input_username
+            TELEGRAM_USERNAME="${input_username:-$old_username}"
+        else
+            read -p "Введите Telegram username для упоминания (например: @username или username): " TELEGRAM_USERNAME
+        fi
+        
+        if [[ -z "$TELEGRAM_USERNAME" ]]; then
+            print_warning "Username не указан, упоминание в сообщениях будет отсутствовать"
+            TELEGRAM_USERNAME=""
+            break
+        fi
+        
+        # Добавляем @ если его нет
+        if [[ ! "$TELEGRAM_USERNAME" =~ ^@ ]]; then
+            TELEGRAM_USERNAME="@$TELEGRAM_USERNAME"
+        fi
+        
+        print_info "Вы ввели username: $TELEGRAM_USERNAME"
+        read -p "Это верно? (y/n): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            break
+        fi
+    done
     
     echo ""
     
@@ -417,6 +513,23 @@ get_telegram_data() {
         fi
     done
     
+    # Настройка типов уведомлений
+    if [ -n "$old_notify_success" ] && [ -n "$old_notify_failed" ]; then
+        echo ""
+        print_info "Текущие настройки уведомлений:"
+        print_info "Успешные подключения: $([ "$old_notify_success" = "true" ] && echo "ВКЛЮЧЕНЫ" || echo "ОТКЛЮЧЕНЫ")"
+        print_info "Неудачные попытки: $([ "$old_notify_failed" = "true" ] && echo "ВКЛЮЧЕНЫ" || echo "ОТКЛЮЧЕНЫ")"
+        read -p "Изменить настройки уведомлений? (y/n): " change_notify
+        if [[ "$change_notify" =~ ^[Yy]$ ]]; then
+            configure_notification_types
+        else
+            NOTIFY_SUCCESS="$old_notify_success"
+            NOTIFY_FAILED="$old_notify_failed"
+        fi
+    else
+        configure_notification_types
+    fi
+    
     # Настройка антиспама
     if [ -n "$old_antispam" ] && [ -n "$old_timeout" ]; then
         echo ""
@@ -449,9 +562,14 @@ create_config_file() {
 # Telegram настройки
 TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
+TELEGRAM_USERNAME="$TELEGRAM_USERNAME"
 
 # Настройки альтернативных портов (через запятую)
 ALT_PORTS="$ALT_PORTS"
+
+# Настройки типов уведомлений
+NOTIFY_SUCCESS=$NOTIFY_SUCCESS
+NOTIFY_FAILED=$NOTIFY_FAILED
 
 # Настройки антиспама
 ANTISPAM_ENABLED=$ANTISPAM_ENABLED
@@ -507,6 +625,7 @@ config = load_config()
 # ==== Настройка Telegram ====
 TELEGRAM_BOT_TOKEN = config.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = config.get('TELEGRAM_CHAT_ID', '')
+TELEGRAM_USERNAME = config.get('TELEGRAM_USERNAME', '')
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
 # ==== Настройки альтернативных портов ====
@@ -515,6 +634,10 @@ if ALT_PORTS_STR:
     ALT_PORTS = [p.strip() for p in ALT_PORTS_STR.split(',') if p.strip()]
 else:
     ALT_PORTS = []
+
+# ==== Настройки типов уведомлений ====
+NOTIFY_SUCCESS = config.get('NOTIFY_SUCCESS', 'true').lower() == 'true'
+NOTIFY_FAILED = config.get('NOTIFY_FAILED', 'true').lower() == 'true'
 
 # ==== Настройки антиспама ====
 ANTISPAM_ENABLED = config.get('ANTISPAM_ENABLED', 'true').lower() == 'true'
@@ -640,7 +763,13 @@ def format_success(user, method, client_ip, port):
     geo_info = get_ip_geo_info(client_ip)
     geo_text = format_ip_geo_info(geo_info)
     
-    return f"""#SSH_Подключения ✅
+    # Формируем сообщение: сначала хэштег, потом упоминание
+    message = f"""#SSH_Подключения ✅"""
+    
+    if TELEGRAM_USERNAME:
+        message += f"\n{TELEGRAM_USERNAME}"
+    
+    message += f"""
 🖥️ Сервер: {SERVER_HOSTNAME}
 🌐 Сервер IP: {SERVER_IP}
 📌 FQDN: {SERVER_FQDN}
@@ -652,6 +781,8 @@ def format_success(user, method, client_ip, port):
 🔌 Порт: {port}
 📅 Дата: {now.strftime('%Y-%m-%d')}
 🕒 Время: {now.strftime('%H:%M:%S')}"""
+    
+    return message
 
 def format_failed(client_ip, port, username="неизвестно", method="неизвестно", is_alternative=False):
     now = datetime.datetime.now()
@@ -662,7 +793,13 @@ def format_failed(client_ip, port, username="неизвестно", method="не
         username = f"попытка подключения к порту {port}"
         method = "TCP-соединение"
     
-    return f"""#SSH_Атака ❌
+    # Формируем сообщение: сначала хэштег, потом упоминание
+    message = f"""#SSH_Атака ❌"""
+    
+    if TELEGRAM_USERNAME:
+        message += f"\n{TELEGRAM_USERNAME}"
+    
+    message += f"""
 🖥️ Сервер: {SERVER_HOSTNAME}
 🌐 Сервер IP: {SERVER_IP}
 📌 FQDN: {SERVER_FQDN}
@@ -674,6 +811,8 @@ def format_failed(client_ip, port, username="неизвестно", method="не
 🔌 Порт: {port}
 📅 Дата: {now.strftime('%Y-%m-%d')}
 🕒 Время: {now.strftime('%H:%M:%S')}"""
+    
+    return message
 
 # ==== Мониторинг sshd логов ====
 def monitor_sshd():
@@ -708,7 +847,7 @@ def monitor_sshd():
             continue
 
         # Успешное подключение
-        if "Accepted" in line:
+        if "Accepted" in line and NOTIFY_SUCCESS:
             ip_match = re.search(r'from\s+([0-9.:]+)', line)
             user_match = re.search(r'for\s+(\S+)', line)
             method_match = re.search(r'Accepted\s+(\S+)\s+for', line)
@@ -724,7 +863,7 @@ def monitor_sshd():
                     print(f"✅ Успешное подключение: {user_match.group(1)}@{ip_match.group(1)}")
 
         # Неудачные подключения
-        elif "Failed password" in line or "Invalid user" in line:
+        elif ("Failed password" in line or "Invalid user" in line) and NOTIFY_FAILED:
             ip_match = re.search(r'from\s+([0-9.:]+)', line)
             port_match = re.search(r'port\s+(\d+)', line)
             
@@ -801,7 +940,7 @@ def monitor_port_tcpdump(port):
             continue
         
         # Отслеживаем только новые подключения (SYN пакеты)
-        if "Flags [S]" in line:
+        if "Flags [S]" in line and NOTIFY_FAILED:
             match = re.search(r'IP\s+([0-9.]+)\.(\d+)\s+>', line)
             if match:
                 client_ip = match.group(1)
@@ -864,7 +1003,11 @@ def main():
     print(f"Сервер: {SERVER_HOSTNAME}")
     print(f"IP: {SERVER_IP}")
     print(f"FQDN: {SERVER_FQDN}")
+    print(f"Telegram Username: {TELEGRAM_USERNAME if TELEGRAM_USERNAME else 'не указан'}")
     print(f"Telegram Chat ID: {TELEGRAM_CHAT_ID}")
+    print(f"Уведомления:")
+    print(f"  - Успешные подключения: {'ВКЛ' if NOTIFY_SUCCESS else 'ВЫКЛ'}")
+    print(f"  - Неудачные попытки: {'ВКЛ' if NOTIFY_FAILED else 'ВЫКЛ'}")
     if ALT_PORTS:
         print(f"Альтернативные порты: {', '.join(ALT_PORTS)}")
     else:
@@ -873,13 +1016,16 @@ def main():
     print("=" * 60)
     
     # Отправляем приветственное сообщение
+    username_info = f"\n{TELEGRAM_USERNAME}" if TELEGRAM_USERNAME else ""
     ports_info = f"🔌 Альт. порты: {', '.join(ALT_PORTS)}" if ALT_PORTS else "🔌 Альт. порты: не отслеживаются"
+    notify_info = f"📨 Уведомления: успешные {'✅' if NOTIFY_SUCCESS else '❌'}, неудачные {'✅' if NOTIFY_FAILED else '❌'}"
     
-    welcome_message = f"""#SSH_Мониторинг 🚀
+    welcome_message = f"""#SSH_Мониторинг 🚀{username_info}
 🖥️ Сервер: {SERVER_HOSTNAME}
 🌐 Сервер IP: {SERVER_IP}
 📌 FQDN: {SERVER_FQDN}
 {ports_info}
+{notify_info}
 🛡️ Антиспам: {antispam_status}
 
 Мониторинг SSH подключений запущен
@@ -908,7 +1054,8 @@ def main():
         t2.join()
     except KeyboardInterrupt:
         print("\n⏹️ Остановка мониторинга...")
-        stop_message = f"""#SSH_Мониторинг ⏹️
+        username_info = f"\n{TELEGRAM_USERNAME}" if TELEGRAM_USERNAME else ""
+        stop_message = f"""#SSH_Мониторинг ⏹️{username_info}
 🖥️ Сервер: {SERVER_HOSTNAME}
 🌐 Сервер IP: {SERVER_IP}
 📌 FQDN: {SERVER_FQDN}
@@ -1042,7 +1189,10 @@ show_instructions() {
         echo "  └─ Альтернативные: ${YELLOW}не отслеживаются${NC}"
     fi
     echo ""
-    
+    echo "📨 Типы уведомлений:"
+    echo "  ├─ Успешные подключения: ${GREEN}$([ "$NOTIFY_SUCCESS" = "true" ] && echo "ВКЛ" || echo "ВЫКЛ")${NC}"
+    echo "  └─ Неудачные попытки: ${GREEN}$([ "$NOTIFY_FAILED" = "true" ] && echo "ВКЛ" || echo "ВЫКЛ")${NC}"
+    echo ""
     if [ "$ANTISPAM_ENABLED" = "true" ]; then
         echo "🛡️ Антиспам: ${GREEN}ВКЛЮЧЕН${NC} (интервал: $ANTISPAM_TIMEOUT сек)"
     else
@@ -1070,6 +1220,17 @@ send_test_message() {
         PORTS_TEXT="не отслеживаются"
     fi
     
+    # Формируем информацию о username
+    if [ -n "$TELEGRAM_USERNAME" ]; then
+        USERNAME_TEXT="$TELEGRAM_USERNAME"
+    else
+        USERNAME_TEXT="не указан"
+    fi
+    
+    # Формируем информацию о типах уведомлений
+    SUCCESS_TEXT="$([ "$NOTIFY_SUCCESS" = "true" ] && echo "ВКЛ" || echo "ВЫКЛ")"
+    FAILED_TEXT="$([ "$NOTIFY_FAILED" = "true" ] && echo "ВКЛ" || echo "ВЫКЛ")"
+    
     # Создаем временный скрипт для отправки теста
     TEMP_TEST="/tmp/ssh_alert_test.py"
     
@@ -1081,6 +1242,7 @@ import socket
 
 TELEGRAM_BOT_TOKEN = "$TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID = "$TELEGRAM_CHAT_ID"
+TELEGRAM_USERNAME = "$TELEGRAM_USERNAME"
 ALT_PORTS = "$ALT_PORTS"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
@@ -1105,16 +1267,23 @@ except:
 
 antispam_status = "$ANTISPAM_TEXT"
 ports_text = "$PORTS_TEXT"
+username_text = "$USERNAME_TEXT"
+success_text = "$SUCCESS_TEXT"
+failed_text = "$FAILED_TEXT"
 
 now = datetime.datetime.now()
 current_date = now.strftime('%Y-%m-%d')
 current_time = now.strftime('%H:%M:%S')
 
-test_message = f"""#SSH_Тест ✅
+username_line = f"\\n{TELEGRAM_USERNAME}" if TELEGRAM_USERNAME else ""
+
+test_message = f"""#SSH_Тест ✅{username_line}
 🖥️ Сервер: {hostname}
 🌐 Сервер IP: {server_ip}
 📌 FQDN: {fqdn}
+👤 Упоминание: {username_text}
 🔌 Альт. порты: {ports_text}
+📨 Уведомления: успешные {success_text}, неудачные {failed_text}
 🛡️ Антиспам: {antispam_status}
 
 Тестовое сообщение
@@ -1135,8 +1304,10 @@ try:
     response.raise_for_status()
     print("✅ Тестовое сообщение отправлено успешно!")
     print(f"📊 Сервер: {hostname} ({fqdn}) - {server_ip}")
+    print(f"👤 Упоминание: {username_text}")
     print(f"📨 Chat ID: {TELEGRAM_CHAT_ID}")
     print(f"🔌 Альт. порты: {ports_text}")
+    print(f"📨 Уведомления: успешные {success_text}, неудачные {failed_text}")
     print(f"🛡️ Антиспам: {antispam_status}")
 except Exception as e:
     print(f"❌ Ошибка отправки тестового сообщения: {e}")
@@ -1201,7 +1372,7 @@ main() {
     # Проверка зависимостей
     check_dependencies
     
-    # Получение данных (включая настройки портов и антиспама)
+    # Получение данных (включая настройки портов, username, типы уведомлений и антиспама)
     get_telegram_data
     
     # Создание конфигурационного файла
@@ -1240,6 +1411,14 @@ main() {
     else
         print_info "Сервис '$SERVICE_NAME' будет отслеживать только стандартный SSH порт 22"
     fi
+    
+    if [ -n "$TELEGRAM_USERNAME" ]; then
+        print_info "Упоминания будут отправляться для: $TELEGRAM_USERNAME"
+    else
+        print_info "Упоминания отключены"
+    fi
+    
+    print_info "Уведомления: успешные подключения $([ "$NOTIFY_SUCCESS" = "true" ] && echo "ВКЛ" || echo "ВЫКЛ"), неудачные попытки $([ "$NOTIFY_FAILED" = "true" ] && echo "ВКЛ" || echo "ВЫКЛ")"
     echo ""
 }
 
